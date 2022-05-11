@@ -145,21 +145,34 @@ async def api_get_player_info(
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
-    player = await repositories.players.fetch(player_id, player_name)
+    # get user info from username or user id
+    if player_name:
+        where = "FROM users WHERE safe_name = :username"
+        obj = {"username": player_name.lower()}
+    else:  # if user_id
+        where = "FROM users WHERE id = :userid"
+        obj = {"userid": player_id}
+    
+    player = await app.state.services.database.fetch_one(
+            "SELECT id, name, safe_name, "
+            "creation_time, latest_activity, priv, clan_id, country, silence_end, donor_end "
+            + where,
+            obj,
+    )
+
     if player is None:
         return ORJSONResponse(
             {"status": "Player not found."},
             status_code=status.HTTP_404_NOT_FOUND,
         )
 
-    resolved_player_id = player.id
-    resolved_country = player.geoloc["country"]["acronym"]
+    resolved_player_id = player["id"]
 
     api_data = {}
 
     # fetch user's info if requested
     if scope in ("info", "all"):
-        api_data["info"] = player.to_row()  # TODO:REFACTOR
+        api_data["info"] = dict(player)
 
     # fetch user's stats if requested
     if scope in ("stats", "all"):
@@ -167,7 +180,7 @@ async def api_get_player_info(
 
         # get all stats
         rows = await app.state.services.database.fetch_all(
-            "SELECT mode, tscore, rscore, pp, plays, playtime, acc, max_combo, "
+            "SELECT mode, tscore, rscore, pp, plays, playtime, acc, max_combo "
             "xh_count, x_count, sh_count, s_count, a_count FROM stats "
             "WHERE id = :userid",
             {"userid": resolved_player_id},
@@ -181,7 +194,7 @@ async def api_get_player_info(
             mode_stats["rank"] = rank + 1 if rank is not None else 0
 
             country_rank = await app.state.services.redis.zrevrank(
-                f"bancho:leaderboard:{idx}:{resolved_country}",
+                f"bancho:leaderboard:{idx}:{player['country']}",
                 str(resolved_player_id),
             )
             mode_stats["country_rank"] = (
@@ -883,7 +896,7 @@ async def api_get_clan(
                 {
                     "id": member.id,
                     "name": member.name,
-                    "country": member.geoloc["country"]["acronym"],
+                    "country": member.country,
                     "rank": ("Member", "Officer", "Owner")[member.clan_priv - 1],  # type: ignore
                 }
                 for member in members
@@ -891,7 +904,7 @@ async def api_get_clan(
             "owner": {
                 "id": owner.id,
                 "name": owner.name,
-                "country": owner.geoloc["country"]["acronym"],
+                "country": owner.country,
                 "rank": "Owner",
             },
         },
